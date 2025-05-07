@@ -20,9 +20,11 @@ EVENING_PEAK_END = 19 * 60
 LOW_TRAFFIC_START = 0 * 60;
 LOW_TRAFFIC_END = 7 * 60
 
-PROB_LOW_TRAFFIC = 0.05;
-PROB_NORMAL_TRAFFIC = 0.2;
-PROB_PEAK_TRAFFIC = 0.5
+# --- Probability Definitions ---
+# request per minute
+PROB_LOW_TRAFFIC = 0.05; # 1 request per 20 minutes
+PROB_NORMAL_TRAFFIC = 0.2; # 1 request per 10 minutes
+PROB_PEAK_TRAFFIC = 0.5   # 1 request per 5 minutes
 
 
 class Elevator:
@@ -34,7 +36,7 @@ class Elevator:
         self.time_in_current_state = 0
         self.passengers_inside = {}
         self.committed_pickups = {}
-        self.current_direction_of_service = None
+        self.current_direction = None
         self.next_target_stop = None
         self.non_idle_time_steps = 0
         self.empty_g_return_trips_initiated = 0
@@ -45,10 +47,10 @@ class Elevator:
         pass_dests = sorted([p['dest'] for p in self.passengers_inside.values()])
         pickup_origins = sorted([p['origin'] for p in self.committed_pickups.values()])
         return (f"{self.id} " 
-                f"F:{self.current_floor} S:{self.state} Dir:{self.current_direction_of_service} Target:{self.next_target_stop} "
+                f"F:{self.current_floor} S:{self.state} Dir:{self.current_direction} Target:{self.next_target_stop} "
                 f"PassDests:{pass_dests} PickupOrigins:{pickup_origins}")
 
-    def is_effectively_idle(self):
+    def is_idle(self):
         return self.state == "IDLE" and not self.passengers_inside and not self.committed_pickups
 
     def has_tasks(self):
@@ -56,12 +58,12 @@ class Elevator:
 
     def add_assigned_hall_call(self, req_id, origin, dest, direction):
         self.committed_pickups[req_id] = {'origin': origin, 'dest': dest, 'direction': direction}
-        if self.is_effectively_idle():  
+        if self.is_idle():  
             self._determine_next_target_and_direction()
 
     def _determine_next_target_and_direction(self):
         if not self.has_tasks():
-            self.current_direction_of_service = None
+            self.current_direction = None
             self.next_target_stop = None
             if self.state != "DOOR_CYCLE": self.state = "IDLE"
             return
@@ -75,7 +77,7 @@ class Elevator:
                 potential_stops[c_data['origin']]['pickup_down'].append(req_id)
 
         determined_target = None
-        determined_direction = self.current_direction_of_service  
+        determined_direction = self.current_direction  
 
         if determined_direction == "UP":
             for floor in sorted(potential_stops.keys()):
@@ -120,18 +122,18 @@ class Elevator:
                             elif tasks['pickup_down'] or (tasks['dropoff'] and floor < self.current_floor):
                                 determined_direction = "DOWN"
                             elif tasks['dropoff'] and floor == self.current_floor:  
-                                determined_direction = self.current_direction_of_service  
+                                determined_direction = self.current_direction  
 
         self.next_target_stop = determined_target
-        self.current_direction_of_service = determined_direction if determined_target is not None else None
+        self.current_direction = determined_direction if determined_target is not None else None
 
         if self.next_target_stop is not None:
             if self.current_floor == self.next_target_stop:
                 self.state = "DOOR_CYCLE"; self.time_in_current_state = 0
             elif self.next_target_stop > self.current_floor:
-                self.current_floor += 1; self.current_direction_of_service = "UP"
+                self.current_floor += 1; self.current_direction = "UP"
             elif self.next_target_stop < self.current_floor:
-                self.current_floor -= 1; self.current_direction_of_service = "DOWN"
+                self.current_floor -= 1; self.current_direction = "DOWN"
 
 
     def step(self, building_stats_collector, current_sim_time):
@@ -141,9 +143,9 @@ class Elevator:
         if self.state == "IDLE":
             if not self.has_tasks():
                 if G_RETURN_ENABLED and self.is_designated_g_return_elevator and self.current_floor != GROUND_FLOOR:
-                    self.current_direction_of_service = "DOWN" if self.current_floor > GROUND_FLOOR else "UP"
+                    self.current_direction = "DOWN" if self.current_floor > GROUND_FLOOR else "UP"
                     if self.current_floor == GROUND_FLOOR:
-                        self.current_direction_of_service = None; self.state = "IDLE"
+                        self.current_direction = None; self.state = "IDLE"
                     else:
                         self.next_target_stop = GROUND_FLOOR; self.state = "MOVING"
                     self.empty_g_return_trips_initiated += 1
@@ -164,9 +166,9 @@ class Elevator:
                 for r in dropped_ids: del self.passengers_inside[r]
                 for r, c in list(self.committed_pickups.items()):
                     if c['origin'] == self.current_floor:
-                        if self.current_direction_of_service is None or c[
-                            'direction'] == self.current_direction_of_service or not self.passengers_inside:
-                            if self.current_direction_of_service is None and not self.passengers_inside: self.current_direction_of_service = \
+                        if self.current_direction is None or c[
+                            'direction'] == self.current_direction or not self.passengers_inside:
+                            if self.current_direction is None and not self.passengers_inside: self.current_direction = \
                             c['direction']
                             self.passengers_inside[r] = {'origin': c['origin'], 'dest': c['dest'],
                                                          'pickup_time': current_sim_time};
@@ -183,9 +185,9 @@ class Elevator:
             if self.current_floor == self.next_target_stop:
                 self.state = "DOOR_CYCLE"; self.time_in_current_state = 0
             elif self.next_target_stop > self.current_floor:
-                self.current_floor += 1; self.current_direction_of_service = "UP"
+                self.current_floor += 1; self.current_direction = "UP"
             elif self.next_target_stop < self.current_floor:
-                self.current_floor -= 1; self.current_direction_of_service = "DOWN"
+                self.current_floor -= 1; self.current_direction = "DOWN"
 
 
 class StatsCollector:  
@@ -268,14 +270,14 @@ class Building:
                 min_dist_to_pickup = float('inf')
 
                 for elev in self.elevators:
-                    if not elev.current_direction_of_service or elev.current_direction_of_service == call_direction:
+                    if not elev.current_direction or elev.current_direction == call_direction:
                         can_pickup = False
                         if call_direction == "UP" and elev.current_floor <= call_origin:
                             can_pickup = True  
                         elif call_direction == "DOWN" and elev.current_floor >= call_origin:
                             can_pickup = True  
 
-                        if elev.is_effectively_idle() and not elev.has_tasks():
+                        if elev.is_idle() and not elev.has_tasks():
                             can_pickup = True
 
                         if can_pickup:
@@ -302,7 +304,7 @@ class Building:
             best_standard_elevator = None
             min_metric_standard = float('inf')
 
-            idle_candidates = [e for e in self.elevators if e.is_effectively_idle()]
+            idle_candidates = [e for e in self.elevators if e.is_idle()]
             if idle_candidates:
                 for elev in idle_candidates:
                     dist = abs(elev.current_floor - call_origin)
@@ -331,7 +333,7 @@ class Building:
         if verbose:
             for elev in self.elevators: print(elev)  
             g_elevators_idle = [e.id for e in self.elevators if
-                                e.is_effectively_idle() and e.current_floor == GROUND_FLOOR]
+                                e.is_idle() and e.current_floor == GROUND_FLOOR]
             print(f"Elevators idle at G: {g_elevators_idle if g_elevators_idle else 'None'}")
             print(f"Pending Hall Calls: {len(self.pending_hall_calls)}")
 
